@@ -17,13 +17,9 @@
 
       <section class="panel upload-panel" aria-labelledby="upload-title">
         <div class="section-heading">
-          <div>
-            <span class="step">01</span>
-            <h2 id="upload-title">音声を選択</h2>
-          </div>
+          <div><span class="step">01</span><h2 id="upload-title">音声を選択</h2></div>
           <span class="privacy-badge">● 端末内で処理</span>
         </div>
-
         <label class="dropzone" id="dropzone" for="file-input">
           <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm" />
           <div class="upload-icon" aria-hidden="true">↑</div>
@@ -31,72 +27,31 @@
           <span>またはクリックしてファイルを選択</span>
           <small>MP3 / WAV / M4A / AAC / OGG / FLAC / WebM　・　最大100 MB / 8分</small>
         </label>
-
-        <div class="file-card hidden" id="file-card">
-          <div class="file-icon">♪</div>
-          <div class="file-info">
-            <strong id="file-name">—</strong>
-            <span id="file-meta">—</span>
-          </div>
-          <button class="icon-button" id="remove-file" type="button" aria-label="ファイルを削除">×</button>
-        </div>
-
+        <div class="file-card hidden" id="file-card"><div class="file-icon">♪</div><div class="file-info"><strong id="file-name">—</strong><span id="file-meta">—</span></div><button class="icon-button" id="remove-file" type="button" aria-label="ファイルを削除">×</button></div>
         <audio class="audio-player hidden" id="audio-player" controls></audio>
-
-        <button class="primary-button" id="convert-button" type="button" disabled>
-          分離してMIDIに変換する
-        </button>
+        <button class="primary-button" id="convert-button" type="button" disabled>分離してMIDIに変換する</button>
       </section>
 
       <section class="panel progress-panel hidden" id="progress-panel" aria-live="polite">
-        <div class="section-heading">
-          <div>
-            <span class="step">02</span>
-            <h2>解析中</h2>
-          </div>
-          <span id="progress-percent">0%</span>
-        </div>
+        <div class="section-heading"><div><span class="step">02</span><h2>解析中</h2></div><span id="progress-percent">0%</span></div>
         <div class="progress-track"><div id="progress-bar"></div></div>
         <p class="status" id="status-text">準備しています…</p>
         <p class="hint">初回は音源分離AIモデル（約172 MB）の読み込みに時間がかかる場合があります。</p>
       </section>
 
       <section class="panel result-panel hidden" id="result-panel" aria-labelledby="result-title">
-        <div class="section-heading">
-          <div>
-            <span class="step">03</span>
-            <h2 id="result-title">変換完了</h2>
-          </div>
-          <span class="success-badge">✓ 完了</span>
-        </div>
-
+        <div class="section-heading"><div><span class="step">03</span><h2 id="result-title">変換完了</h2></div><span class="success-badge">✓ 完了</span></div>
         <div class="stats" id="stats"></div>
         <button class="primary-button download-button" id="download-button" type="button">MIDIをダウンロード</button>
         <button class="secondary-button" id="reset-button" type="button">別の音声を変換</button>
       </section>
 
       <section class="info-grid">
-        <article>
-          <span>AI PIPELINE</span>
-          <strong>Demucs → Basic Pitch</strong>
-          <p>まず4ステムへ分離し、その後に各ステムを個別に採譜してMIDIへ統合します。</p>
-        </article>
-        <article>
-          <span>PRIVACY</span>
-          <strong>音声をアップロードしない</strong>
-          <p>音源分離・音声解析・MIDI生成はブラウザ内で行います。</p>
-        </article>
-        <article>
-          <span>LIMIT</span>
-          <strong>ブラウザGPU推奨</strong>
-          <p>音源分離は従来のMIDI変換より重いため、対応GPUが使える環境ほど快適です。</p>
-        </article>
+        <article><span>AI PIPELINE</span><strong>Demucs → stem-specific MIDI</strong><p>4ステムへ分離後、ボーカル・ベース・その他はBasic Pitch、ドラムは専用の打楽器検出でMIDI化して統合します。</p></article>
+        <article><span>PRIVACY</span><strong>音声をアップロードしない</strong><p>音源分離・音声解析・MIDI生成はブラウザ内で行います。AIモデル自体は初回にダウンロードされます。</p></article>
+        <article><span>LIMIT</span><strong>ブラウザGPU推奨</strong><p>音源分離は重い処理です。iPhone/iPadではWASM、対応デスクトップではWebGPUを優先します。</p></article>
       </section>
-
-      <footer>
-        <span>Audio → MIDI</span>
-        <span>Local-first · No account required</span>
-      </footer>
+      <footer><span>Audio → MIDI</span><span>Local-first · No account required</span></footer>
     </main>
     <script type="module" src="/src/main-v3.js"></script>
   </body>
