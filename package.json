@@ -1,0 +1,18 @@
+{
+  "name": "audio-to-midi",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Browser-local audio to MIDI converter powered by Spotify Basic Pitch.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@musicbento/audio-to-midi": "1.0.0"
+  },
+  "devDependencies": {
+    "vite": "7.1.5"
+  }
+}
