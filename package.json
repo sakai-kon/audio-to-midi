@@ -1,8 +1,8 @@
 {
   "name": "audio-to-midi",
   "private": true,
-  "version": "1.0.0",
-  "description": "Browser-local audio to MIDI converter powered by Basic Pitch.",
+  "version": "1.1.0",
+  "description": "Browser-local stem-separated audio to MIDI converter powered by Demucs and Basic Pitch.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@musicbento/audio-to-midi": "1.0.0"
+    "@musicbento/audio-to-midi": "1.0.0",
+    "demucs-web": "1.0.2",
+    "onnxruntime-web": "1.29.0"
   },
   "devDependencies": {
     "vite": "7.1.5"
