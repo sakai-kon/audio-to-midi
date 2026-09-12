@@ -16,7 +16,7 @@
 * { box-sizing: border-box; }
 html { min-height: 100%; background: var(--bg); }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 
 body::before {
@@ -81,6 +81,31 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .icon-button:hover { color: #fff; }
 .audio-player { width: 100%; margin-top: 14px; height: 42px; }
 
+.source-mode-control {
+  margin: 16px 0 4px;
+  padding: 14px;
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255,255,255,.025);
+}
+.source-mode-control label { color: #dfe4f0; font-size: 12px; font-weight: 800; }
+.source-mode-control select {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 11px;
+  background: rgba(7,10,18,.78);
+  color: #f5f7ff;
+  cursor: pointer;
+  outline: none;
+}
+.source-mode-control select:hover { border-color: rgba(255,255,255,.2); }
+.source-mode-control select:focus-visible { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(94,234,212,.08); }
+.source-mode-control small { color: var(--muted); line-height: 1.5; font-size: 11px; }
+
 .primary-button, .secondary-button { width: 100%; min-height: 52px; border-radius: 14px; cursor: pointer; font-weight: 800; border: 1px solid transparent; transition: .18s ease; }
 .primary-button { margin-top: 16px; background: linear-gradient(135deg, #8b7cff, #6d5cff); color: #fff; box-shadow: 0 12px 28px rgba(109,92,255,.2); }
 .primary-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); }
@@ -116,6 +141,7 @@ footer { display: flex; justify-content: space-between; gap: 15px; color: #5f687
   #app { width: min(100% - 20px, 920px); padding-top: 44px; }
   .panel { padding: 17px; border-radius: 20px; }
   .dropzone { min-height: 230px; padding: 20px; }
+  .source-mode-control { margin-top: 14px; padding: 12px; }
   .stats, .info-grid { grid-template-columns: 1fr; }
   .section-heading { align-items: flex-start; }
   footer { flex-direction: column; }
