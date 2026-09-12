@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b1020" />
-    <meta name="description" content="音声ファイルをブラウザ上でMIDIへ変換するローカルAIツール。" />
+    <meta name="description" content="音声をブラウザ上で音源分離し、各ステムを個別にMIDI化して統合するローカルAIツール。" />
     <title>Audio → MIDI</title>
   </head>
   <body>
@@ -12,7 +12,7 @@
       <section class="hero">
         <div class="eyebrow">LOCAL AUDIO TRANSCRIPTION</div>
         <h1>Audio <span>→</span> MIDI</h1>
-        <p>音声をブラウザ内で解析して、演奏情報をMIDIファイルに変換します。</p>
+        <p>音源を分離してから各ステムを個別に解析し、最後に1つのMIDIへ統合します。</p>
       </section>
 
       <section class="panel upload-panel" aria-labelledby="upload-title">
@@ -44,7 +44,7 @@
         <audio class="audio-player hidden" id="audio-player" controls></audio>
 
         <button class="primary-button" id="convert-button" type="button" disabled>
-          MIDIに変換する
+          分離してMIDIに変換する
         </button>
       </section>
 
@@ -58,7 +58,7 @@
         </div>
         <div class="progress-track"><div id="progress-bar"></div></div>
         <p class="status" id="status-text">準備しています…</p>
-        <p class="hint">初回はAIモデルの読み込みに少し時間がかかります。</p>
+        <p class="hint">初回は音源分離AIモデル（約172 MB）の読み込みに時間がかかる場合があります。</p>
       </section>
 
       <section class="panel result-panel hidden" id="result-panel" aria-labelledby="result-title">
@@ -77,19 +77,19 @@
 
       <section class="info-grid">
         <article>
-          <span>AI ENGINE</span>
-          <strong>Basic Pitch</strong>
-          <p>Spotify Audio Intelligence Labの軽量な自動採譜モデルを利用します。</p>
+          <span>AI PIPELINE</span>
+          <strong>Demucs → Basic Pitch</strong>
+          <p>まず4ステムへ分離し、その後に各ステムを個別に採譜してMIDIへ統合します。</p>
         </article>
         <article>
           <span>PRIVACY</span>
           <strong>音声をアップロードしない</strong>
-          <p>音声のデコード・解析・MIDI生成はブラウザ内で行います。</p>
+          <p>音源分離・音声解析・MIDI生成はブラウザ内で行います。</p>
         </article>
         <article>
-          <span>BEST RESULT</span>
-          <strong>単一音源が得意</strong>
-          <p>ボーカルやピアノなど、主な音が比較的はっきりした音源で高い精度を狙えます。</p>
+          <span>LIMIT</span>
+          <strong>ブラウザGPU推奨</strong>
+          <p>音源分離は従来のMIDI変換より重いため、対応GPUが使える環境ほど快適です。</p>
         </article>
       </section>
 
@@ -98,6 +98,6 @@
         <span>Local-first · No account required</span>
       </footer>
     </main>
-    <script type="module" src="/src/main-v2.js"></script>
+    <script type="module" src="/src/main-v3.js"></script>
   </body>
 </html>
