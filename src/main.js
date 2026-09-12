@@ -8,10 +8,6 @@ import './style.css';
 const MAX_BYTES = 100 * 1024 * 1024;
 const MAX_SECONDS = 8 * 60;
 const SUPPORTED_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'webm'];
-
-// Voice recordings often produce tiny same-pitch note fragments around consonants,
-// vibrato and pitch-tracking jitter. These conservative limits join only very short
-// fragments, so intentional notes are left alone.
 const VOICE_SMOOTH_MAX_GAP_TICKS = 18;
 const VOICE_SMOOTH_MAX_FRAGMENT_TICKS = 30;
 
@@ -180,11 +176,10 @@ function isLikelyWebGLFailure(error) {
 
 function readVarInt(bytes, index) {
   let value = 0;
-  let count = 0;
-  while (index < bytes.length && count < 4) {
+  for (let count = 0; count < 4; count += 1) {
+    if (index >= bytes.length) throw new Error('invalid-midi-varint');
     const byte = bytes[index++];
     value = (value << 7) | (byte & 0x7f);
-    count += 1;
     if (!(byte & 0x80)) return { value, next: index };
   }
   throw new Error('invalid-midi-varint');
@@ -200,9 +195,8 @@ function writeVarInt(value) {
   while (true) {
     result.push(buffer & 0xff);
     if (buffer & 0x80) buffer >>= 8;
-    else break;
+    else return result;
   }
-  return result;
 }
 
 function u32(bytes, index) {
@@ -223,7 +217,7 @@ function parseMidi(bytes) {
   const format = (bytes[8] << 8) | bytes[9];
   const trackCount = (bytes[10] << 8) | bytes[11];
   const division = (bytes[12] << 8) | bytes[13];
-  if (division & 0x8000 || headerLength < 6) throw new Error('unsupported-midi-division');
+  if (headerLength < 6 || division & 0x8000) throw new Error('unsupported-midi-division');
 
   let offset = 8 + headerLength;
   const tracks = [];
@@ -251,7 +245,7 @@ function parseMidi(bytes) {
       } else {
         cursor += 1;
         if (status < 0xf0) runningStatus = status;
-        else if (status === 0xf4 || status === 0xf5 || status === 0xf6 || status === 0xf8 || status === 0xf9 || status === 0xfa || status === 0xfb || status === 0xfc || status === 0xfd || status === 0xfe || status === 0xff) runningStatus = null;
+        else runningStatus = null;
       }
 
       const type = status & 0xf0;
@@ -278,13 +272,11 @@ function parseMidi(bytes) {
         data = bytes.slice(cursor, cursor + dataLength);
         cursor += dataLength;
       }
-
       events.push({ tick: absoluteTick, status, data });
     }
     tracks.push(events);
     offset = end;
   }
-
   return { format, division, tracks };
 }
 
@@ -294,8 +286,7 @@ function encodeMidi(parsed) {
     const track = [];
     let previousTick = 0;
     for (const event of events) {
-      const delta = Math.max(0, event.tick - previousTick);
-      track.push(...writeVarInt(delta), event.status, ...event.data);
+      track.push(...writeVarInt(Math.max(0, event.tick - previousTick)), event.status, ...event.data);
       previousTick = event.tick;
     }
     output.push(0x4d, 0x54, 0x72, 0x6b, ...putU32(track.length), ...track);
@@ -314,57 +305,61 @@ function smoothVoiceMidi(midiBytes) {
       for (const event of events) {
         const type = event.status & 0xf0;
         const channel = event.status & 0x0f;
-        if ((type === 0x90 && event.data[1] > 0) || type === 0x80 || (type === 0x90 && event.data[1] === 0)) {
-          const key = `${channel}:${event.data[0]}`;
-          if (type === 0x90 && event.data[1] > 0) {
-            const list = active.get(key) ?? [];
-            list.push({ start: event.tick, event });
-            active.set(key, list);
-          } else {
-            const list = active.get(key);
-            if (list?.length) {
-              const note = list.shift();
-              notes.push({ start: note.start, end: event.tick, channel, pitch: event.data[0], on: note.event, off: event });
-            }
+        const isNoteOn = type === 0x90 && event.data[1] > 0;
+        const isNoteOff = type === 0x80 || (type === 0x90 && event.data[1] === 0);
+        if (!isNoteOn && !isNoteOff) continue;
+
+        const key = `${channel}:${event.data[0]}`;
+        if (isNoteOn) {
+          const list = active.get(key) ?? [];
+          list.push({ start: event.tick, on: event });
+          active.set(key, list);
+        } else {
+          const list = active.get(key);
+          if (list?.length) {
+            const note = list.shift();
+            notes.push({ start: note.start, end: event.tick, channel, pitch: event.data[0], on: note.on, off: event });
           }
         }
       }
 
       notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch);
       const remove = new Set();
-      for (let i = 0; i < notes.length - 1; i += 1) {
-        const current = notes[i];
-        const next = notes[i + 1];
-        const sameVoice = current.channel === next.channel && current.pitch === next.pitch;
-        const gap = next.start - current.end;
-        const nextLength = next.end - next.start;
-        if (sameVoice && gap >= 0 && gap <= VOICE_SMOOTH_MAX_GAP_TICKS && nextLength <= VOICE_SMOOTH_MAX_FRAGMENT_TICKS) {
-          current.end = next.end;
-          current.off.tick = next.off.tick;
+      for (let i = 0; i < notes.length; i += 1) {
+        const first = notes[i];
+        let last = first;
+        let j = i + 1;
+        while (j < notes.length) {
+          const next = notes[j];
+          const gap = next.start - last.end;
+          const nextLength = next.end - next.start;
+          if (next.channel !== first.channel || next.pitch !== first.pitch || gap < 0 || gap > VOICE_SMOOTH_MAX_GAP_TICKS || nextLength > VOICE_SMOOTH_MAX_FRAGMENT_TICKS) break;
           remove.add(next.on);
-          remove.add(next.off);
+          remove.add(last.off);
+          last = next;
+          j += 1;
           changed = true;
         }
+        if (last !== first) {
+          first.off = last.off;
+          first.off.tick = last.end;
+        }
+        i = j - 1;
       }
 
       if (remove.size) {
-        // Move the retained note-off event to the merged note's final position.
-        for (const note of notes) {
-          if (remove.has(note.on) || remove.has(note.off)) continue;
-          if (note.end !== note.off.tick) {
-            note.off.tick = note.end;
-          }
+        // A retained note-off may have been marked for removal while extending a group.
+        // Rebuild the removal set so only intermediate events disappear.
+        const retainedOffs = new Set(notes.filter((note) => !remove.has(note.on)).map((note) => note.off));
+        for (const event of Array.from(remove)) {
+          if (retainedOffs.has(event)) remove.delete(event);
         }
-        const keptOffs = new Set(notes.filter((note) => !remove.has(note.off)).map((note) => note.off));
         events.splice(0, events.length, ...events.filter((event) => !remove.has(event)));
-        // The event object already carries the final tick, so sorting restores chronological order.
         events.sort((a, b) => a.tick - b.tick);
-        void keptOffs;
       }
     }
 
-    if (!changed) return new Uint8Array(midiBytes);
-    return encodeMidi(parsed);
+    return changed ? encodeMidi(parsed) : new Uint8Array(midiBytes);
   } catch (error) {
     console.warn('Voice MIDI smoothing skipped:', error);
     return new Uint8Array(midiBytes);
@@ -391,7 +386,6 @@ async function runConversion(converterInstance) {
 
 async function convert() {
   if (!selectedFile || conversionBusy) return;
-
   conversionBusy = true;
   clearError();
   convertButton.disabled = true;
@@ -402,7 +396,6 @@ async function convert() {
 
   try {
     if (!converter) converter = new AudioToMidiConverter(audioToMidiDefaults);
-
     try {
       latestResult = await runConversion(converter);
     } catch (error) {
@@ -419,7 +412,6 @@ async function convert() {
   } catch (error) {
     console.error('Audio to MIDI conversion failed:', error);
     let message = '変換に失敗しました。別の音声ファイルで試してください。';
-
     if (error instanceof AudioToMidiError) {
       const messages = {
         'file-too-large': 'ファイルが大きすぎます。100 MB以下にしてください。',
@@ -427,11 +419,10 @@ async function convert() {
         'decode-failed': '音声をデコードできませんでした。ブラウザが対応する形式か確認してください。',
         'model-load-failed': 'AIモデルを読み込めませんでした。ページを再読み込みしてもう一度試してください。',
         'transcription-failed': '音声のAI解析に失敗しました。',
-        'no-notes-detected': '音声から音符を検出できませんでした。音量を上げるか、音程がはっきりした音源で試してください。',
+        'no-notes-detected': '音声から音符を検出できませんでした。音程がはっきりした音源で試してください。',
       };
       message = messages[error.code] ?? message;
     }
-
     showError(message);
     setProgress(0, '変換に失敗しました。');
   } finally {
@@ -444,13 +435,11 @@ function renderResult(result) {
   const noteCount = Number(result?.noteCount ?? 0);
   const duration = audioPlayer.duration;
   const midiSize = result?.midiBytes?.byteLength ?? result?.midiBlob?.size ?? 0;
-
   stats.innerHTML = `
     <div class="stat"><span>検出ノート</span><strong>${noteCount.toLocaleString('ja-JP')}</strong><small>notes</small></div>
     <div class="stat"><span>音声長</span><strong>${formatDuration(duration)}</strong><small>duration</small></div>
     <div class="stat"><span>MIDIサイズ</span><strong>${formatBytes(midiSize)}</strong><small>standard MIDI</small></div>
   `;
-
   resultPanel.classList.remove('hidden');
   resultPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
@@ -478,7 +467,6 @@ dropzone.addEventListener('dragover', (event) => {
   event.preventDefault();
   dropzone.classList.add('dragging');
 });
-
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
 dropzone.addEventListener('drop', (event) => {
   event.preventDefault();
