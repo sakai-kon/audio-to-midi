@@ -9,6 +9,12 @@ const MAX_BYTES = 100 * 1024 * 1024;
 const MAX_SECONDS = 8 * 60;
 const SUPPORTED_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'webm'];
 
+// Voice recordings often produce tiny same-pitch note fragments around consonants,
+// vibrato and pitch-tracking jitter. These conservative limits join only very short
+// fragments, so intentional notes are left alone.
+const VOICE_SMOOTH_MAX_GAP_TICKS = 18;
+const VOICE_SMOOTH_MAX_FRAGMENT_TICKS = 30;
+
 const $ = (selector) => document.querySelector(selector);
 const fileInput = $('#file-input');
 const dropzone = $('#dropzone');
@@ -172,13 +178,212 @@ function isLikelyWebGLFailure(error) {
   return text.includes('webgl') || text.includes('shader') || text.includes('backend') || text.includes('gpu');
 }
 
+function readVarInt(bytes, index) {
+  let value = 0;
+  let count = 0;
+  while (index < bytes.length && count < 4) {
+    const byte = bytes[index++];
+    value = (value << 7) | (byte & 0x7f);
+    count += 1;
+    if (!(byte & 0x80)) return { value, next: index };
+  }
+  throw new Error('invalid-midi-varint');
+}
+
+function writeVarInt(value) {
+  let buffer = value & 0x7f;
+  const result = [];
+  while ((value >>= 7)) {
+    buffer <<= 8;
+    buffer |= (value & 0x7f) | 0x80;
+  }
+  while (true) {
+    result.push(buffer & 0xff);
+    if (buffer & 0x80) buffer >>= 8;
+    else break;
+  }
+  return result;
+}
+
+function u32(bytes, index) {
+  return ((bytes[index] << 24) | (bytes[index + 1] << 16) | (bytes[index + 2] << 8) | bytes[index + 3]) >>> 0;
+}
+
+function putU32(value) {
+  return [(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff];
+}
+
+function putU16(value) {
+  return [(value >>> 8) & 0xff, value & 0xff];
+}
+
+function parseMidi(bytes) {
+  if (bytes.length < 14 || String.fromCharCode(...bytes.slice(0, 4)) !== 'MThd') throw new Error('not-midi');
+  const headerLength = u32(bytes, 4);
+  const format = (bytes[8] << 8) | bytes[9];
+  const trackCount = (bytes[10] << 8) | bytes[11];
+  const division = (bytes[12] << 8) | bytes[13];
+  if (division & 0x8000 || headerLength < 6) throw new Error('unsupported-midi-division');
+
+  let offset = 8 + headerLength;
+  const tracks = [];
+  for (let trackIndex = 0; trackIndex < trackCount; trackIndex += 1) {
+    if (offset + 8 > bytes.length || String.fromCharCode(...bytes.slice(offset, offset + 4)) !== 'MTrk') throw new Error('invalid-midi-track');
+    const length = u32(bytes, offset + 4);
+    const start = offset + 8;
+    const end = start + length;
+    if (end > bytes.length) throw new Error('invalid-midi-track-length');
+
+    let cursor = start;
+    let absoluteTick = 0;
+    let runningStatus = null;
+    const events = [];
+    while (cursor < end) {
+      const delta = readVarInt(bytes, cursor);
+      cursor = delta.next;
+      absoluteTick += delta.value;
+      if (cursor >= end) break;
+
+      let status = bytes[cursor];
+      if (status < 0x80) {
+        if (runningStatus === null) throw new Error('invalid-midi-running-status');
+        status = runningStatus;
+      } else {
+        cursor += 1;
+        if (status < 0xf0) runningStatus = status;
+        else if (status === 0xf4 || status === 0xf5 || status === 0xf6 || status === 0xf8 || status === 0xf9 || status === 0xfa || status === 0xfb || status === 0xfc || status === 0xfd || status === 0xfe || status === 0xff) runningStatus = null;
+      }
+
+      const type = status & 0xf0;
+      let data = [];
+      if (status === 0xff) {
+        if (cursor >= end) throw new Error('invalid-meta');
+        const metaType = bytes[cursor++];
+        const lengthInfo = readVarInt(bytes, cursor);
+        cursor = lengthInfo.next;
+        const metaEnd = cursor + lengthInfo.value;
+        if (metaEnd > end) throw new Error('invalid-meta-length');
+        data = [metaType, ...bytes.slice(cursor, metaEnd)];
+        cursor = metaEnd;
+      } else if (status === 0xf0 || status === 0xf7) {
+        const lengthInfo = readVarInt(bytes, cursor);
+        cursor = lengthInfo.next;
+        const sysexEnd = cursor + lengthInfo.value;
+        if (sysexEnd > end) throw new Error('invalid-sysex-length');
+        data = bytes.slice(cursor, sysexEnd);
+        cursor = sysexEnd;
+      } else {
+        const dataLength = type === 0xc0 || type === 0xd0 ? 1 : 2;
+        if (cursor + dataLength > end) throw new Error('invalid-midi-event');
+        data = bytes.slice(cursor, cursor + dataLength);
+        cursor += dataLength;
+      }
+
+      events.push({ tick: absoluteTick, status, data });
+    }
+    tracks.push(events);
+    offset = end;
+  }
+
+  return { format, division, tracks };
+}
+
+function encodeMidi(parsed) {
+  const output = [0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, ...putU16(parsed.format), ...putU16(parsed.tracks.length), ...putU16(parsed.division)];
+  for (const events of parsed.tracks) {
+    const track = [];
+    let previousTick = 0;
+    for (const event of events) {
+      const delta = Math.max(0, event.tick - previousTick);
+      track.push(...writeVarInt(delta), event.status, ...event.data);
+      previousTick = event.tick;
+    }
+    output.push(0x4d, 0x54, 0x72, 0x6b, ...putU32(track.length), ...track);
+  }
+  return new Uint8Array(output);
+}
+
+function smoothVoiceMidi(midiBytes) {
+  try {
+    const parsed = parseMidi(new Uint8Array(midiBytes));
+    let changed = false;
+
+    for (const events of parsed.tracks) {
+      const notes = [];
+      const active = new Map();
+      for (const event of events) {
+        const type = event.status & 0xf0;
+        const channel = event.status & 0x0f;
+        if ((type === 0x90 && event.data[1] > 0) || type === 0x80 || (type === 0x90 && event.data[1] === 0)) {
+          const key = `${channel}:${event.data[0]}`;
+          if (type === 0x90 && event.data[1] > 0) {
+            const list = active.get(key) ?? [];
+            list.push({ start: event.tick, event });
+            active.set(key, list);
+          } else {
+            const list = active.get(key);
+            if (list?.length) {
+              const note = list.shift();
+              notes.push({ start: note.start, end: event.tick, channel, pitch: event.data[0], on: note.event, off: event });
+            }
+          }
+        }
+      }
+
+      notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch);
+      const remove = new Set();
+      for (let i = 0; i < notes.length - 1; i += 1) {
+        const current = notes[i];
+        const next = notes[i + 1];
+        const sameVoice = current.channel === next.channel && current.pitch === next.pitch;
+        const gap = next.start - current.end;
+        const nextLength = next.end - next.start;
+        if (sameVoice && gap >= 0 && gap <= VOICE_SMOOTH_MAX_GAP_TICKS && nextLength <= VOICE_SMOOTH_MAX_FRAGMENT_TICKS) {
+          current.end = next.end;
+          current.off.tick = next.off.tick;
+          remove.add(next.on);
+          remove.add(next.off);
+          changed = true;
+        }
+      }
+
+      if (remove.size) {
+        // Move the retained note-off event to the merged note's final position.
+        for (const note of notes) {
+          if (remove.has(note.on) || remove.has(note.off)) continue;
+          if (note.end !== note.off.tick) {
+            note.off.tick = note.end;
+          }
+        }
+        const keptOffs = new Set(notes.filter((note) => !remove.has(note.off)).map((note) => note.off));
+        events.splice(0, events.length, ...events.filter((event) => !remove.has(event)));
+        // The event object already carries the final tick, so sorting restores chronological order.
+        events.sort((a, b) => a.tick - b.tick);
+        void keptOffs;
+      }
+    }
+
+    if (!changed) return new Uint8Array(midiBytes);
+    return encodeMidi(parsed);
+  } catch (error) {
+    console.warn('Voice MIDI smoothing skipped:', error);
+    return new Uint8Array(midiBytes);
+  }
+}
+
+function makeMidiBlob(result) {
+  const sourceBytes = result?.midiBytes;
+  if (!sourceBytes) return result?.midiBlob ?? null;
+  const smoothed = smoothVoiceMidi(sourceBytes);
+  return new Blob([smoothed], { type: 'audio/midi' });
+}
+
 async function runConversion(converterInstance) {
   return converterInstance.convert(selectedFile, {
     onStatus(status) {
       setProgress(0.03, statusLabel(status));
     },
     onProgress(progress) {
-      // Reserve a small amount of headroom for final MIDI creation.
       setProgress(0.05 + Math.max(0, Math.min(1, progress)) * 0.9, 'AIが音声からノートを推定しています…');
     },
   });
@@ -196,21 +401,19 @@ async function convert() {
   progressPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
   try {
-    if (!converter) {
-      converter = new AudioToMidiConverter(audioToMidiDefaults);
-    }
+    if (!converter) converter = new AudioToMidiConverter(audioToMidiDefaults);
 
     try {
       latestResult = await runConversion(converter);
     } catch (error) {
-      // Some Safari/iOS/WebGL implementations can fail inside TensorFlow.js.
-      // Retry once with the CPU backend instead of leaving the user with a dead conversion.
       if (!isLikelyWebGLFailure(error)) throw error;
       setProgress(0.04, 'GPU解析に失敗したため、CPU解析へ切り替えています…');
       cpuConverter ??= new AudioToMidiConverter({ ...audioToMidiDefaults, backend: 'cpu' });
       latestResult = await runConversion(cpuConverter);
     }
 
+    const smoothedBlob = makeMidiBlob(latestResult);
+    if (smoothedBlob) latestResult = { ...latestResult, midiBlob: smoothedBlob, midiBytes: await smoothedBlob.arrayBuffer() };
     setProgress(1, '変換が完了しました。');
     renderResult(latestResult);
   } catch (error) {
@@ -224,7 +427,7 @@ async function convert() {
         'decode-failed': '音声をデコードできませんでした。ブラウザが対応する形式か確認してください。',
         'model-load-failed': 'AIモデルを読み込めませんでした。ページを再読み込みしてもう一度試してください。',
         'transcription-failed': '音声のAI解析に失敗しました。',
-        'no-notes-detected': '音声から音符を検出できませんでした。音量を上げるか、楽器音がはっきりした音源で試してください。',
+        'no-notes-detected': '音声から音符を検出できませんでした。音量を上げるか、音程がはっきりした音源で試してください。',
       };
       message = messages[error.code] ?? message;
     }
@@ -277,7 +480,6 @@ dropzone.addEventListener('dragover', (event) => {
 });
 
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
-
 dropzone.addEventListener('drop', (event) => {
   event.preventDefault();
   dropzone.classList.remove('dragging');
