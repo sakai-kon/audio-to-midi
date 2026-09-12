@@ -7,40 +7,50 @@ import './style.css';
 
 const MAX_BYTES = 100 * 1024 * 1024;
 const MAX_SECONDS = 8 * 60;
+const SUPPORTED_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'webm'];
 
-const fileInput = document.querySelector('#file-input');
-const dropzone = document.querySelector('#dropzone');
-const fileCard = document.querySelector('#file-card');
-const fileName = document.querySelector('#file-name');
-const fileMeta = document.querySelector('#file-meta');
-const audioPlayer = document.querySelector('#audio-player');
-const convertButton = document.querySelector('#convert-button');
-const removeFileButton = document.querySelector('#remove-file');
-const progressPanel = document.querySelector('#progress-panel');
-const progressBar = document.querySelector('#progress-bar');
-const progressPercent = document.querySelector('#progress-percent');
-const statusText = document.querySelector('#status-text');
-const resultPanel = document.querySelector('#result-panel');
-const stats = document.querySelector('#stats');
-const downloadButton = document.querySelector('#download-button');
-const resetButton = document.querySelector('#reset-button');
+const $ = (selector) => document.querySelector(selector);
+const fileInput = $('#file-input');
+const dropzone = $('#dropzone');
+const fileCard = $('#file-card');
+const fileName = $('#file-name');
+const fileMeta = $('#file-meta');
+const audioPlayer = $('#audio-player');
+const convertButton = $('#convert-button');
+const removeFileButton = $('#remove-file');
+const progressPanel = $('#progress-panel');
+const progressBar = $('#progress-bar');
+const progressPercent = $('#progress-percent');
+const statusText = $('#status-text');
+const resultPanel = $('#result-panel');
+const stats = $('#stats');
+const downloadButton = $('#download-button');
+const resetButton = $('#reset-button');
 
 let selectedFile = null;
 let latestResult = null;
 let objectUrl = null;
 let converter = null;
+let cpuConverter = null;
+let conversionBusy = false;
 
 function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '—';
+  if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds)) return '—';
-  const total = Math.round(seconds);
+  const total = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(total / 60);
   const secs = total % 60;
   return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function extensionOf(name) {
+  return name.includes('.') ? name.split('.').pop().toLowerCase() : '';
 }
 
 function setProgress(value, status) {
@@ -61,6 +71,7 @@ function clearError() {
 }
 
 function reset() {
+  if (conversionBusy) return;
   selectedFile = null;
   latestResult = null;
   fileInput.value = '';
@@ -78,49 +89,71 @@ function reset() {
   }
 }
 
+async function getAudioDuration(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const duration = await new Promise((resolve, reject) => {
+      const audio = document.createElement('audio');
+      audio.preload = 'metadata';
+      const cleanup = () => {
+        audio.removeAttribute('src');
+        audio.load();
+        URL.revokeObjectURL(url);
+      };
+      audio.addEventListener('loadedmetadata', () => {
+        const value = audio.duration;
+        cleanup();
+        Number.isFinite(value) ? resolve(value) : reject(new Error('invalid-duration'));
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        cleanup();
+        reject(new Error('audio-decode-failed'));
+      }, { once: true });
+      audio.src = url;
+    });
+    return duration;
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
+
 async function inspectFile(file) {
   clearError();
   if (!file) return;
+
+  const extension = extensionOf(file.name);
+  if (!SUPPORTED_EXTENSIONS.includes(extension)) {
+    showError('対応していない形式です。MP3 / WAV / M4A / AAC / OGG / FLAC / WebMを選択してください。');
+    return;
+  }
 
   if (file.size > MAX_BYTES) {
     showError('ファイルが大きすぎます。100 MB以下の音声を選択してください。');
     return;
   }
 
-  if (objectUrl) URL.revokeObjectURL(objectUrl);
-  objectUrl = URL.createObjectURL(file);
-
-  fileName.textContent = file.name;
-  fileMeta.textContent = `${formatBytes(file.size)} · 読み込み中…`;
-  fileCard.classList.remove('hidden');
-  audioPlayer.src = objectUrl;
-  audioPlayer.classList.remove('hidden');
-
   try {
-    const duration = await new Promise((resolve, reject) => {
-      const onLoaded = () => cleanup(resolve, audioPlayer.duration);
-      const onError = () => cleanup(reject, new Error('audio-decode-failed'));
-      const cleanup = (fn, value) => {
-        audioPlayer.removeEventListener('loadedmetadata', onLoaded);
-        audioPlayer.removeEventListener('error', onError);
-        fn(value);
-      };
-      audioPlayer.addEventListener('loadedmetadata', onLoaded, { once: true });
-      audioPlayer.addEventListener('error', onError, { once: true });
-      audioPlayer.load();
-    });
-
+    const duration = await getAudioDuration(file);
     if (duration > MAX_SECONDS) {
       showError('音声が長すぎます。8分以内の音声を選択してください。');
-      convertButton.disabled = true;
       return;
     }
 
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(file);
     selectedFile = file;
+    latestResult = null;
+
+    fileName.textContent = file.name;
     fileMeta.textContent = `${formatBytes(file.size)} · ${formatDuration(duration)}`;
+    fileCard.classList.remove('hidden');
+    audioPlayer.src = objectUrl;
+    audioPlayer.classList.remove('hidden');
     convertButton.disabled = false;
+    resultPanel.classList.add('hidden');
   } catch {
-    showError('この音声をブラウザで読み込めませんでした。WAVやMP3などを試してください。');
+    showError('この音声をブラウザで読み込めませんでした。別の形式の音声で試してください。');
     convertButton.disabled = true;
   }
 }
@@ -129,14 +162,32 @@ function statusLabel(status) {
   return {
     'loading-model': 'AIモデルを読み込んでいます…',
     'decoding-audio': '音声を解析用データに変換しています…',
-    transcribing: 'AIが音高と発音タイミングを解析しています…',
-    'preparing-midi': 'MIDIノートを整理しています…',
+    transcribing: 'AIが音高・発音タイミングを解析しています…',
+    'preparing-midi': '検出したノートからMIDIを生成しています…',
   }[status] ?? '解析しています…';
 }
 
-async function convert() {
-  if (!selectedFile) return;
+function isLikelyWebGLFailure(error) {
+  const text = String(error?.message ?? error ?? '').toLowerCase();
+  return text.includes('webgl') || text.includes('shader') || text.includes('backend') || text.includes('gpu');
+}
 
+async function runConversion(converterInstance) {
+  return converterInstance.convert(selectedFile, {
+    onStatus(status) {
+      setProgress(0.03, statusLabel(status));
+    },
+    onProgress(progress) {
+      // Reserve a small amount of headroom for final MIDI creation.
+      setProgress(0.05 + Math.max(0, Math.min(1, progress)) * 0.9, 'AIが音声からノートを推定しています…');
+    },
+  });
+}
+
+async function convert() {
+  if (!selectedFile || conversionBusy) return;
+
+  conversionBusy = true;
   clearError();
   convertButton.disabled = true;
   progressPanel.classList.remove('hidden');
@@ -145,49 +196,51 @@ async function convert() {
   progressPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
   try {
-    // Reuse the model between conversions so repeated runs do not reload it.
-    if (!converter) converter = new AudioToMidiConverter(audioToMidiDefaults);
+    if (!converter) {
+      converter = new AudioToMidiConverter(audioToMidiDefaults);
+    }
 
-    latestResult = await converter.convert(selectedFile, {
-      onStatus(status) {
-        setProgress(0.02, statusLabel(status));
-      },
-      onProgress(progress) {
-        // Keep the loading/decoding stages visible while allowing the model
-        // to report its actual transcription progress.
-        const value = Math.max(0.02, Math.min(0.98, progress));
-        setProgress(value, 'AIが音声からノートを推定しています…');
-      },
-    });
+    try {
+      latestResult = await runConversion(converter);
+    } catch (error) {
+      // Some Safari/iOS/WebGL implementations can fail inside TensorFlow.js.
+      // Retry once with the CPU backend instead of leaving the user with a dead conversion.
+      if (!isLikelyWebGLFailure(error)) throw error;
+      setProgress(0.04, 'GPU解析に失敗したため、CPU解析へ切り替えています…');
+      cpuConverter ??= new AudioToMidiConverter({ ...audioToMidiDefaults, backend: 'cpu' });
+      latestResult = await runConversion(cpuConverter);
+    }
 
     setProgress(1, '変換が完了しました。');
     renderResult(latestResult);
   } catch (error) {
-    console.error(error);
+    console.error('Audio to MIDI conversion failed:', error);
     let message = '変換に失敗しました。別の音声ファイルで試してください。';
 
     if (error instanceof AudioToMidiError) {
       const messages = {
         'file-too-large': 'ファイルが大きすぎます。100 MB以下にしてください。',
         'audio-too-long': '音声が長すぎます。8分以内にしてください。',
-        'decode-failed': '音声をデコードできませんでした。対応形式か確認してください。',
-        'model-load-failed': 'AIモデルを読み込めませんでした。通信状態を確認してください。',
+        'decode-failed': '音声をデコードできませんでした。ブラウザが対応する形式か確認してください。',
+        'model-load-failed': 'AIモデルを読み込めませんでした。ページを再読み込みしてもう一度試してください。',
         'transcription-failed': '音声のAI解析に失敗しました。',
-        'no-notes-detected': '音声から音符を検出できませんでした。',
+        'no-notes-detected': '音声から音符を検出できませんでした。音量を上げるか、楽器音がはっきりした音源で試してください。',
       };
       message = messages[error.code] ?? message;
     }
 
     showError(message);
+    setProgress(0, '変換に失敗しました。');
   } finally {
+    conversionBusy = false;
     convertButton.disabled = !selectedFile;
   }
 }
 
 function renderResult(result) {
-  const noteCount = Number(result.noteCount ?? 0);
+  const noteCount = Number(result?.noteCount ?? 0);
   const duration = audioPlayer.duration;
-  const midiSize = result.midiBytes?.byteLength ?? result.midiBlob?.size ?? 0;
+  const midiSize = result?.midiBytes?.byteLength ?? result?.midiBlob?.size ?? 0;
 
   stats.innerHTML = `
     <div class="stat"><span>検出ノート</span><strong>${noteCount.toLocaleString('ja-JP')}</strong><small>notes</small></div>
@@ -203,8 +256,9 @@ function downloadMidi() {
   if (!latestResult?.midiBlob) return;
   const url = URL.createObjectURL(latestResult.midiBlob);
   const anchor = document.createElement('a');
+  const baseName = selectedFile?.name?.replace(/\.[^.]+$/, '') || 'audio';
   anchor.href = url;
-  anchor.download = latestResult.filename || `${selectedFile?.name.replace(/\.[^.]+$/, '') || 'audio'}-transcribed.mid`;
+  anchor.download = latestResult.filename || `${baseName}-transcribed.mid`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -227,6 +281,9 @@ dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging
 dropzone.addEventListener('drop', (event) => {
   event.preventDefault();
   dropzone.classList.remove('dragging');
-  const file = event.dataTransfer.files?.[0];
-  if (file) inspectFile(file);
+  inspectFile(event.dataTransfer.files?.[0]);
+});
+
+window.addEventListener('beforeunload', () => {
+  if (objectUrl) URL.revokeObjectURL(objectUrl);
 });
